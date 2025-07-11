@@ -246,7 +246,10 @@
                                 <div class="flex flex-wrap items-center gap-2">
                                     <div class="toolbar-group">
                                         <button onclick="resetEditor()" class="icon-btn">
-                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m6.128 15.128L12 21m0 0L8.872 18.872M12 21V15.75m-3.375 0L6.75 18.75M9.128 15.75L12 13.5m0 0l2.872 2.25M12 13.5V9.75m-3.375 0L6.75 12.25m2.372-2.25L12 7.5m0 0l2.872 2.25" /></svg>
+                                            <!-- ICON CHANGE: Replaced the old icon with a more intuitive 'document-plus' icon -->
+                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m.75 12l3 3m0 0l3-3m-3 3v-6m-1.5-9H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                                            </svg>
                                             <span class="tooltip">ไฟล์ใหม่</span>
                                         </button>
                                     </div>
@@ -923,11 +926,13 @@
 
             for (let i = 0; i < rows.length; i++) {
                 const row = rows[i];
-                const isCellInFrozenRowArea = i < frozenState.row;
+                // FIX: Use <= to include the selected row in the freeze. This ensures if you select 3 rows, all 3 are frozen.
+                const isCellInFrozenRowArea = i <= frozenState.row;
 
                 for (let j = 0; j < row.cells.length; j++) {
                     const cell = row.cells[j];
-                    const isCellInFrozenColArea = j < frozenState.col;
+                    // FIX: Use <= to include the selected column in the freeze.
+                    const isCellInFrozenColArea = j <= frozenState.col;
 
                     if (areRowsFrozen && areColsFrozen && isCellInFrozenRowArea && isCellInFrozenColArea) {
                         cell.classList.add('frozen-corner');
