@@ -236,9 +236,9 @@
                         <div id="drop-zone-edit" class="border-4 border-dashed border-gray-300 rounded-xl p-8 md:p-12 text-center cursor-pointer hover:border-blue-500">
                             <div class="flex flex-col items-center justify-center text-gray-500">
                                 <svg class="w-16 h-16 mb-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" /></svg>
-                                <p class="font-semibold">ลากไฟล์ .xlsx หรือ .xls มาวางที่นี่เพื่อแก้ไข</p>
+                                <p class="font-semibold">ลากไฟล์ .xlsx .xls หรือ .csv มาวางที่นี่เพื่อแก้ไข</p>
                             </div>
-                            <input type="file" id="file-input-edit" class="hidden" accept=".xlsx, .xls" multiple="false">
+                            <input type="file" id="file-input-edit" class="hidden" accept=".xlsx, .xls, .csv" multiple="false">
                         </div>
                         <div id="editor-view" class="hidden">
                             <!-- New Toolbar -->
@@ -246,7 +246,6 @@
                                 <div class="flex flex-wrap items-center gap-2">
                                     <div class="toolbar-group">
                                         <button onclick="resetEditor()" class="icon-btn">
-                                            <!-- ICON CHANGE: Replaced the old icon with a more intuitive 'document-plus' icon -->
                                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
                                                 <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m.75 12l3 3m0 0l3-3m-3 3v-6m-1.5-9H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
                                             </svg>
@@ -490,16 +489,18 @@
             if (e.target && e.target.classList.contains('sheet-tab')) {
                 const sheetName = e.target.dataset.sheetName;
                 if (sheetName !== activeSheetName) {
-                    updateSheetData();
+                    // Don't save state when just switching sheets, but do update the underlying model
+                    updateSheetData(); // Ensure current sheet data is saved before switching
                     renderSheet(sheetName);
+                    saveState(); // Save state after switching and rendering the new sheet
                 }
             }
         });
 
         function handleFileEdit(file) {
-            const validExtensions = ['.xlsx', '.xls'];
+            const validExtensions = ['.xlsx', '.xls','.csv'];
             if (!validExtensions.some(ext => file.name.toLowerCase().endsWith(ext))) {
-                Swal.fire('ข้อผิดพลาด', 'โปรดเลือกไฟล์ .xlsx หรือ .xls เท่านั้น', 'error');
+                Swal.fire('ข้อผิดพลาด', 'โปรดเลือกไฟล์ .xlsx , .xls หรือ .csv เท่านั้น', 'error');
                 return;
             }
             currentFilename = file.name.split('.').slice(0, -1).join('.');
@@ -508,6 +509,17 @@
                 try {
                     const data = new Uint8Array(e.target.result);
                     currentWorkbook = XLSX.read(data, { type: 'array', cellDates: true, bookVBA: true });
+                    
+                    // --- REVISED: Initialize history and state ---
+                    actionHistory = []; 
+                    redoHistory = [];
+                    sheetMerges = {}; 
+                    frozenState = { row: 0, col: 0 }; 
+
+                    // Populate sheetMerges from the loaded workbook
+                    currentWorkbook.SheetNames.forEach(name => {
+                        sheetMerges[name] = currentWorkbook.Sheets[name]['!merges'] || [];
+                    });
                     
                     sheetSelector.innerHTML = '';
                     currentWorkbook.SheetNames.forEach(name => {
@@ -521,6 +533,7 @@
                     dropZoneEdit.classList.add('hidden');
                     editorView.classList.remove('hidden');
                     renderSheet(currentWorkbook.SheetNames[0]);
+                    saveState(false); // Save the very first state of the workbook after rendering
                     
                 } catch (error) {
                     Swal.fire('ข้อผิดพลาด', 'ไม่สามารถอ่านไฟล์ได้ โปรดตรวจสอบว่าไฟล์ไม่เสียหาย', 'error');
@@ -539,9 +552,11 @@
 
             // Get header data from the THEAD section
             const headerRow = [];
-            const headerCells = rows[0].cells;
-            for(let i = 1; i < headerCells.length; i++) { // Start from 1 to skip row number header
-                headerRow.push(headerCells[i].innerText);
+            if (rows.length > 0) {
+                const headerCells = rows[0].cells;
+                for(let i = 1; i < headerCells.length; i++) { // Start from 1 to skip row number header
+                    headerRow.push(headerCells[i].innerText);
+                }
             }
             data.push(headerRow);
 
@@ -577,29 +592,38 @@
             });
 
             const sheet = currentWorkbook.Sheets[sheetName];
-            sheetMerges[activeSheetName] = sheet['!merges'] || [];
+            // Ensure sheetMerges has an entry for the active sheet
+            if (!sheetMerges[activeSheetName]) {
+                 sheetMerges[activeSheetName] = sheet['!merges'] || [];
+            }
             const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
             
             let maxCols = 0;
             jsonData.forEach(row => {
                 if(row.length > maxCols) maxCols = row.length;
             });
+             // Ensure at least one column is rendered even for an empty sheet
+            if (maxCols === 0 && jsonData.length > 0) maxCols = 1;
+
 
             const numRows = jsonData.length;
 
             let tableHTML = '<table id="excel-table"><thead><tr><th></th>';
-            const headers = jsonData[0] || []; 
+            // Use header row from jsonData if it exists, otherwise generate column letters
+            const headers = jsonData[0] && jsonData[0].length > 0 ? jsonData[0] : Array(maxCols).fill('').map((_, i) => XLSX.utils.encode_col(i));
             for(let i = 0; i < maxCols; i++) {
                 const headerText = headers[i] ?? XLSX.utils.encode_col(i);
                 tableHTML += `<th>${headerText}</th>`;
             }
             tableHTML += '</tr></thead><tbody>';
             
-            for (let r = 1; r < numRows; r++) {
-                tableHTML += `<tr><th>${r}</th>`;
+            // Start from row 1 if there's a header, otherwise start from 0
+            const dataStartIndex = (jsonData[0] && jsonData[0].length > 0) ? 1 : 0;
+            for (let r = dataStartIndex; r < numRows; r++) {
+                tableHTML += `<tr><th>${r + 1}</th>`; // Display 1-based row numbers
                 for (let c = 0; c < maxCols; c++) {
                     const cellValue = jsonData[r]?.[c] ?? '';
-                    tableHTML += `<td data-r="${r-1}" data-c="${c}">${cellValue}</td>`;
+                    tableHTML += `<td data-r="${r}" data-c="${c}">${cellValue}</td>`;
                 }
                 tableHTML += '</tr>';
             }
@@ -612,7 +636,8 @@
                 const start = { r: merge.s.r, c: merge.s.c };
                 const end = { r: merge.e.r, c: merge.e.c };
                 
-                const topCell = table.querySelector(`tbody tr:nth-child(${start.r}) td[data-c="${start.c}"]`);
+                // Find the top-left cell of the merge range (data-r is 0-based, merge.s.r is 0-based for data)
+                const topCell = table.querySelector(`td[data-r="${start.r}"][data-c="${start.c}"]`);
 
                 if (topCell) {
                     topCell.colSpan = end.c - start.c + 1;
@@ -620,7 +645,7 @@
                     for (let r = start.r; r <= end.r; r++) {
                         for (let c = start.c; c <= end.c; c++) {
                             if (r === start.r && c === start.c) continue;
-                             const cellToHide = table.querySelector(`tbody tr:nth-child(${r}) td[data-c="${c}"]`);
+                             const cellToHide = table.querySelector(`td[data-r="${r}"][data-c="${c}"]`);
                             if (cellToHide) cellToHide.style.display = 'none';
                         }
                     }
@@ -630,7 +655,6 @@
             updateRowCount();
             applyZoom(true);
             applyFreezing();
-            // Do not save state on initial render
         }
 
         function exportData(format) {
@@ -666,35 +690,82 @@
         }
 
         // --- History (Undo/Redo) Logic ---
-        function saveState() {
-            updateSheetData();
+        function saveState(shouldUpdateFromDOM = true) {
+            if (!currentWorkbook) return;
+
+            // Ensure current sheet data is updated from DOM before saving
+            if (shouldUpdateFromDOM && activeSheetName) {
+                updateSheetData();
+            }
+
             const state = {
-                workbook: JSON.parse(JSON.stringify(currentWorkbook)),
+                sheetNames: [...currentWorkbook.SheetNames],
+                sheets: {},
+                merges: JSON.parse(JSON.stringify(sheetMerges)),
                 activeSheet: activeSheetName,
                 frozen: {...frozenState}
             };
-            actionHistory.push(state);
-            redoHistory = [];
-            if (actionHistory.length > HISTORY_LIMIT) {
-                actionHistory.shift();
+
+            for (const name of state.sheetNames) {
+                 // Use XLSX.utils.sheet_to_json to get data from the workbook's sheet object
+                 // This ensures we're saving the actual workbook state, not just what's on DOM
+                 state.sheets[name] = XLSX.utils.sheet_to_json(currentWorkbook.Sheets[name], { header: 1, defval: '' });
             }
+            
+            actionHistory.push(state);
+            redoHistory = []; // Clear redo history when a new action is performed
+            if (actionHistory.length > HISTORY_LIMIT) {
+                actionHistory.shift(); // Remove oldest state if history limit is exceeded
+            }
+            console.log("State saved. History length:", actionHistory.length);
         }
 
         function restoreState(state) {
-            currentWorkbook = state.workbook;
+            if (!state) {
+                console.warn("No state to restore.");
+                return;
+            }
+            console.log("Restoring state...");
+
+            const newWorkbook = XLSX.utils.book_new();
+            for (const sheetName of state.sheetNames) {
+                const sheetData = state.sheets[sheetName];
+                const newSheet = XLSX.utils.aoa_to_sheet(sheetData);
+                // Restore merges for the sheet
+                newSheet['!merges'] = state.merges[sheetName] || [];
+                XLSX.utils.book_append_sheet(newWorkbook, newSheet, sheetName);
+            }
+            
+            currentWorkbook = newWorkbook;
+            sheetMerges = JSON.parse(JSON.stringify(state.merges)); // Deep copy merges
             frozenState = state.frozen;
+            
+            // Re-populate sheet selector tabs
+            sheetSelector.innerHTML = '';
+            currentWorkbook.SheetNames.forEach(name => {
+                const button = document.createElement('button');
+                button.className = 'sheet-tab';
+                button.textContent = name;
+                button.dataset.sheetName = name;
+                sheetSelector.appendChild(button);
+            });
+            
+            // Render the active sheet from the restored state
             renderSheet(state.activeSheet);
+            console.log("State restored successfully.");
         }
 
         function undo() {
-            if (actionHistory.length <= 1) {
+            if (actionHistory.length <= 1) { // Keep at least the initial state
                 displayMessage('ไม่มีการกระทำที่จะย้อนกลับ', 'info');
                 return;
             }
-            redoHistory.push(actionHistory.pop());
+            const currentState = actionHistory.pop();
+            redoHistory.push(currentState);
             const previousState = actionHistory[actionHistory.length - 1];
             restoreState(previousState);
             displayMessage('ย้อนกลับการกระทำล่าสุด', 'success');
+            console.log("Undo performed. History length:", actionHistory.length, "Redo length:", redoHistory.length);
         }
 
         function redo() {
@@ -706,6 +777,7 @@
             actionHistory.push(nextState);
             restoreState(nextState);
             displayMessage('ทำซ้ำการกระทำ', 'success');
+            console.log("Redo performed. History length:", actionHistory.length, "Redo length:", redoHistory.length);
         }
 
         // --- Table Manipulation Logic ---
@@ -718,7 +790,8 @@
                 const baseIndex = direction === 'above' ? Math.min(...selectedRows) : Math.max(...selectedRows);
                 insertAt = direction === 'above' ? baseIndex : baseIndex + 1;
             } else {
-                insertAt = direction === 'above' ? 1 : data.length;
+                // If no row is selected, insert at the end (or after header if data is empty)
+                insertAt = data.length > 0 ? data.length : 1; // Insert after header if data exists, else at row 1
             }
             
             const newRow = Array(data[0]?.length || 1).fill('');
@@ -739,7 +812,8 @@
                 const baseIndex = direction === 'left' ? Math.min(...selectedCols) : Math.max(...selectedCols);
                 insertAt = direction === 'left' ? baseIndex - 1 : baseIndex;
             } else {
-                insertAt = direction === 'left' ? 0 : (data[0] || []).length;
+                // If no column is selected, insert at the end (or after first column if data is empty)
+                insertAt = (data[0] || []).length;
             }
             
             data.forEach(row => row.splice(insertAt, 0, ''));
@@ -758,10 +832,14 @@
             updateSheetData();
             let data = XLSX.utils.sheet_to_json(currentWorkbook.Sheets[activeSheetName], {header: 1, defval: ''});
             
+            // FIX: The rowIndex from the table (stored in selectedRows) corresponds directly 
+            // to the index in the data array when using {header: 1}.
+            // e.g., The first data row in the table is at rowIndex 1, and in the data array it's at index 1.
+            // The previous .map(r => r - 1) was incorrect and caused deletion of the wrong row (often the header).
             const sortedRows = [...selectedRows].sort((a, b) => b - a);
             
             sortedRows.forEach(rowIndex => {
-                if (rowIndex >= 0 && rowIndex < data.length) {
+                if (rowIndex < data.length && rowIndex > 0) { // rowIndex > 0 is a safeguard against deleting the header
                     data.splice(rowIndex, 1);
                 }
             });
@@ -803,7 +881,7 @@
                 return;
             }
             selectedCells.forEach(cell => cell.innerText = '');
-            saveState();
+            saveState(); // Save state after clearing content
             displayMessage('ลบเนื้อหาแล้ว', 'success');
         }
 
@@ -926,13 +1004,11 @@
 
             for (let i = 0; i < rows.length; i++) {
                 const row = rows[i];
-                // FIX: Use <= to include the selected row in the freeze. This ensures if you select 3 rows, all 3 are frozen.
-                const isCellInFrozenRowArea = i <= frozenState.row;
+                const isCellInFrozenRowArea = i < frozenState.row;
 
                 for (let j = 0; j < row.cells.length; j++) {
                     const cell = row.cells[j];
-                    // FIX: Use <= to include the selected column in the freeze.
-                    const isCellInFrozenColArea = j <= frozenState.col;
+                    const isCellInFrozenColArea = j < frozenState.col;
 
                     if (areRowsFrozen && areColsFrozen && isCellInFrozenRowArea && isCellInFrozenColArea) {
                         cell.classList.add('frozen-corner');
@@ -1150,7 +1226,6 @@
         tableContainer.addEventListener('dblclick', (e) => {
             const target = e.target;
             if (target.tagName === 'TD' || (target.tagName === 'TH' && target.closest('thead') && target.cellIndex > 0)) {
-                // REMOVED saveState() call from here
                 const cell = target;
                 if (!cell.hasAttribute('contenteditable')) {
                     cell.setAttribute('contenteditable', 'true');
@@ -1170,7 +1245,8 @@
             if (target.tagName === 'TD' || (target.tagName === 'TH' && target.closest('thead'))) {
                 if (target.hasAttribute('contenteditable')) {
                     target.removeAttribute('contenteditable');
-                    saveState(); // REPLACED updateSheetData() with saveState()
+                    // Save state when cell editing finishes
+                    saveState(); 
                 }
             }
         });
@@ -1186,7 +1262,7 @@
                 e.preventDefault();
                 if (startCell) {
                     startCell.innerText = formulaBar.value;
-                    saveState(); // MOVED saveState() here to capture the change
+                    saveState(); // Save state after formula bar input
                     
                     const table = document.getElementById('excel-table');
                     const activeCell = startCell;
@@ -1216,7 +1292,7 @@
             if (activeEl.isContentEditable) {
                 if (e.key === 'Enter' && !e.shiftKey) {
                      e.preventDefault();
-                     activeEl.blur();
+                     activeEl.blur(); // This will trigger focusout and saveState
                      handleTableNavigation(e);
                 }
                 return;
@@ -1232,6 +1308,8 @@
                 switch (e.code) {
                     case 'KeyC': e.preventDefault(); copySelectedData(); break;
                     case 'KeyV': e.preventDefault(); pasteData(); break;
+                    case 'KeyZ': e.preventDefault(); undo(); break;
+                    case 'KeyY': e.preventDefault(); redo(); break;
                 }
             } else if (e.code === 'Delete' || e.code === 'Backspace') {
                 e.preventDefault();
@@ -1327,7 +1405,6 @@
             try {
                 const clipboardText = await navigator.clipboard.readText();
                 if (clipboardText) {
-                    // Trim the text and then split to avoid empty rows from trailing newlines
                     dataToPaste = clipboardText.trim().split('\n').map(row => row.split('\t'));
                 }
             } catch (err) {
@@ -1357,7 +1434,7 @@
                 });
             });
             
-            saveState(); // Save state AFTER pasting
+            saveState(); 
             displayMessage('วางข้อมูลเรียบร้อยแล้ว', 'success');
         }
 
@@ -1379,12 +1456,14 @@
                 if (colIndex > maxCol) maxCol = colIndex;
             });
             
-            const mergeInfo = { s: { r: minRow + 1, c: minCol }, e: { r: maxRow + 1, c: maxCol } };
-            if (!currentWorkbook.Sheets[activeSheetName]['!merges']) {
-                currentWorkbook.Sheets[activeSheetName]['!merges'] = [];
-            }
-            currentWorkbook.Sheets[activeSheetName]['!merges'].push(mergeInfo);
+            const mergeInfo = { s: { r: minRow, c: minCol }, e: { r: maxRow, c: maxCol } };
             
+            if (!sheetMerges[activeSheetName]) {
+                sheetMerges[activeSheetName] = [];
+            }
+            sheetMerges[activeSheetName].push(mergeInfo);
+            
+            updateSheetData();
             renderSheet(activeSheetName);
             saveState();
         }
@@ -1395,10 +1474,10 @@
                 return;
             }
 
-            const cellRow = parseInt(startCell.dataset.r, 10) + 1;
+            const cellRow = parseInt(startCell.dataset.r, 10);
             const cellCol = parseInt(startCell.dataset.c, 10);
 
-            const merges = currentWorkbook.Sheets[activeSheetName]['!merges'] || [];
+            const merges = sheetMerges[activeSheetName] || [];
             const mergeIndex = merges.findIndex(m => 
                 cellRow >= m.s.r && cellRow <= m.e.r &&
                 cellCol >= m.s.c && cellCol <= m.e.c
@@ -1406,6 +1485,7 @@
 
             if (mergeIndex > -1) {
                 merges.splice(mergeIndex, 1);
+                updateSheetData();
                 renderSheet(activeSheetName);
                 saveState();
             } else {
@@ -1480,7 +1560,12 @@
         // Initial Load
         document.addEventListener('DOMContentLoaded', () => {
              loadHistory();
-             actionHistory.push({workbook: null, activeSheet: '', frozen: {row: 0, col: 0}});
+             // Initialize actionHistory with a dummy state or the current empty state
+             // This ensures actionHistory.length is at least 1 for undo to work correctly
+             actionHistory = []; 
+             // If you want to save the initial empty state of the editor when it loads,
+             // you might call saveState() here, but it's usually better to save
+             // the first state *after* a file is loaded.
         });
     </script>
 </body>
