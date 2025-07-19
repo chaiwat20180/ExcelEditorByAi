@@ -455,6 +455,16 @@
         setupDragAndDrop(dropZoneConvert, handleFileConvert);
         clearHistoryBtn.addEventListener('click', clearHistory);
 
+        historyList.addEventListener('click', (e) => {
+            const deleteButton = e.target.closest('.delete-history-item-btn');
+            if (deleteButton) {
+                const listItem = deleteButton.closest('li');
+                if (listItem && listItem.dataset.date) {
+                    deleteHistoryItem(listItem.dataset.date);
+                }
+            }
+        });
+
         function handleFileConvert(file) {
             if (!file.name.toLowerCase().endsWith('.xlsx')) {
                 displayMessage('โปรดเลือกไฟล์ .xlsx เท่านั้น', 'error');
@@ -489,10 +499,9 @@
             if (e.target && e.target.classList.contains('sheet-tab')) {
                 const sheetName = e.target.dataset.sheetName;
                 if (sheetName !== activeSheetName) {
-                    // Don't save state when just switching sheets, but do update the underlying model
-                    updateSheetData(); // Ensure current sheet data is saved before switching
+                    updateSheetData();
                     renderSheet(sheetName);
-                    saveState(); // Save state after switching and rendering the new sheet
+                    saveState(false);
                 }
             }
         });
@@ -510,13 +519,11 @@
                     const data = new Uint8Array(e.target.result);
                     currentWorkbook = XLSX.read(data, { type: 'array', cellDates: true, bookVBA: true });
                     
-                    // --- REVISED: Initialize history and state ---
                     actionHistory = []; 
                     redoHistory = [];
                     sheetMerges = {}; 
                     frozenState = { row: 0, col: 0 }; 
 
-                    // Populate sheetMerges from the loaded workbook
                     currentWorkbook.SheetNames.forEach(name => {
                         sheetMerges[name] = currentWorkbook.Sheets[name]['!merges'] || [];
                     });
@@ -533,7 +540,7 @@
                     dropZoneEdit.classList.add('hidden');
                     editorView.classList.remove('hidden');
                     renderSheet(currentWorkbook.SheetNames[0]);
-                    saveState(false); // Save the very first state of the workbook after rendering
+                    saveState(false);
                     
                 } catch (error) {
                     Swal.fire('ข้อผิดพลาด', 'ไม่สามารถอ่านไฟล์ได้ โปรดตรวจสอบว่าไฟล์ไม่เสียหาย', 'error');
@@ -544,37 +551,29 @@
             fileInputEdit.value = '';
         }
 
-        function getTableDataAsArray() {
+        function updateSheetData() {
+            if (!currentWorkbook || !activeSheetName) return;
             const table = document.getElementById('excel-table');
-            if (!table) return [];
-            const data = [];
-            const rows = table.rows;
+            if (!table) return;
 
-            // Get header data from the THEAD section
+            const data = [];
             const headerRow = [];
-            if (rows.length > 0) {
-                const headerCells = rows[0].cells;
-                for(let i = 1; i < headerCells.length; i++) { // Start from 1 to skip row number header
-                    headerRow.push(headerCells[i].innerText);
-                }
+            const headerCells = table.rows[0].cells;
+            for (let i = 1; i < headerCells.length; i++) {
+                headerRow.push(headerCells[i].innerText);
             }
             data.push(headerRow);
-
-            // Get body data from the TBODY section
-            for (let r = 1; r < rows.length; r++) {
+            
+            const bodyRows = table.tBodies[0].rows;
+            for (let r = 0; r < bodyRows.length; r++) {
                 const rowData = [];
-                const cells = rows[r].cells;
-                for (let i = 1; i < cells.length; i++) { // Start from 1 to skip row number
+                const cells = bodyRows[r].cells;
+                for (let i = 1; i < cells.length; i++) {
                     rowData.push(cells[i].innerText);
                 }
                 data.push(rowData);
             }
-            return data;
-        }
 
-        function updateSheetData() {
-            if (!currentWorkbook || !activeSheetName) return;
-            const data = getTableDataAsArray();
             const sheet = XLSX.utils.aoa_to_sheet(data, {cellDates: true});
             sheet['!merges'] = sheetMerges[activeSheetName] || [];
             currentWorkbook.Sheets[activeSheetName] = sheet;
@@ -592,38 +591,51 @@
             });
 
             const sheet = currentWorkbook.Sheets[sheetName];
-            // Ensure sheetMerges has an entry for the active sheet
             if (!sheetMerges[activeSheetName]) {
                  sheetMerges[activeSheetName] = sheet['!merges'] || [];
             }
+            // Get data as array of arrays. The first row (jsonData[0]) will be treated as the header.
             const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
             
             let maxCols = 0;
             jsonData.forEach(row => {
                 if(row.length > maxCols) maxCols = row.length;
             });
-             // Ensure at least one column is rendered even for an empty sheet
-            if (maxCols === 0 && jsonData.length > 0) maxCols = 1;
 
+            // Handle a completely empty sheet by creating a default grid
+            if (jsonData.length === 0) {
+                maxCols = 12; // Default to 12 columns (A-L)
+                // Add a blank row for headers and 20 blank data rows
+                for(let i = 0; i < 21; i++) {
+                    jsonData.push(new Array(maxCols).fill(''));
+                }
+            } else if (maxCols === 0) {
+                 // Handle sheet with rows but no cells
+                maxCols = 1;
+            }
 
             const numRows = jsonData.length;
 
             let tableHTML = '<table id="excel-table"><thead><tr><th></th>';
-            // Use header row from jsonData if it exists, otherwise generate column letters
-            const headers = jsonData[0] && jsonData[0].length > 0 ? jsonData[0] : Array(maxCols).fill('').map((_, i) => XLSX.utils.encode_col(i));
+            
+            // --- FIX: Use the first row of data from the file as the header ---
+            const headers = jsonData[0] || [];
             for(let i = 0; i < maxCols; i++) {
-                const headerText = headers[i] ?? XLSX.utils.encode_col(i);
+                // Use the text from the first row as header. If it's empty, fallback to column letters (A, B, C...).
+                const headerText = headers[i] || XLSX.utils.encode_col(i);
                 tableHTML += `<th>${headerText}</th>`;
             }
+            
             tableHTML += '</tr></thead><tbody>';
             
-            // Start from row 1 if there's a header, otherwise start from 0
-            const dataStartIndex = (jsonData[0] && jsonData[0].length > 0) ? 1 : 0;
-            for (let r = dataStartIndex; r < numRows; r++) {
-                tableHTML += `<tr><th>${r + 1}</th>`; // Display 1-based row numbers
+            // Loop through the actual data rows, which start from the second row (index 1) of jsonData
+            for (let r = 1; r < numRows; r++) {
+                // The row number displayed in the UI (1, 2, 3...)
+                tableHTML += `<tr><th>${r}</th>`; 
                 for (let c = 0; c < maxCols; c++) {
                     const cellValue = jsonData[r]?.[c] ?? '';
-                    tableHTML += `<td data-r="${r}" data-c="${c}">${cellValue}</td>`;
+                    // The data-r attribute is the 0-based index for data rows (r=1 is data-r=0)
+                    tableHTML += `<td data-r="${r-1}" data-c="${c}">${cellValue}</td>`;
                 }
                 tableHTML += '</tr>';
             }
@@ -636,7 +648,6 @@
                 const start = { r: merge.s.r, c: merge.s.c };
                 const end = { r: merge.e.r, c: merge.e.c };
                 
-                // Find the top-left cell of the merge range (data-r is 0-based, merge.s.r is 0-based for data)
                 const topCell = table.querySelector(`td[data-r="${start.r}"][data-c="${start.c}"]`);
 
                 if (topCell) {
@@ -693,7 +704,6 @@
         function saveState(shouldUpdateFromDOM = true) {
             if (!currentWorkbook) return;
 
-            // Ensure current sheet data is updated from DOM before saving
             if (shouldUpdateFromDOM && activeSheetName) {
                 updateSheetData();
             }
@@ -707,40 +717,33 @@
             };
 
             for (const name of state.sheetNames) {
-                 // Use XLSX.utils.sheet_to_json to get data from the workbook's sheet object
-                 // This ensures we're saving the actual workbook state, not just what's on DOM
                  state.sheets[name] = XLSX.utils.sheet_to_json(currentWorkbook.Sheets[name], { header: 1, defval: '' });
             }
             
             actionHistory.push(state);
-            redoHistory = []; // Clear redo history when a new action is performed
+            redoHistory = [];
             if (actionHistory.length > HISTORY_LIMIT) {
-                actionHistory.shift(); // Remove oldest state if history limit is exceeded
+                actionHistory.shift();
             }
-            console.log("State saved. History length:", actionHistory.length);
         }
 
         function restoreState(state) {
             if (!state) {
-                console.warn("No state to restore.");
                 return;
             }
-            console.log("Restoring state...");
 
             const newWorkbook = XLSX.utils.book_new();
             for (const sheetName of state.sheetNames) {
                 const sheetData = state.sheets[sheetName];
                 const newSheet = XLSX.utils.aoa_to_sheet(sheetData);
-                // Restore merges for the sheet
                 newSheet['!merges'] = state.merges[sheetName] || [];
                 XLSX.utils.book_append_sheet(newWorkbook, newSheet, sheetName);
             }
             
             currentWorkbook = newWorkbook;
-            sheetMerges = JSON.parse(JSON.stringify(state.merges)); // Deep copy merges
+            sheetMerges = JSON.parse(JSON.stringify(state.merges));
             frozenState = state.frozen;
             
-            // Re-populate sheet selector tabs
             sheetSelector.innerHTML = '';
             currentWorkbook.SheetNames.forEach(name => {
                 const button = document.createElement('button');
@@ -750,13 +753,11 @@
                 sheetSelector.appendChild(button);
             });
             
-            // Render the active sheet from the restored state
             renderSheet(state.activeSheet);
-            console.log("State restored successfully.");
         }
 
         function undo() {
-            if (actionHistory.length <= 1) { // Keep at least the initial state
+            if (actionHistory.length <= 1) {
                 displayMessage('ไม่มีการกระทำที่จะย้อนกลับ', 'info');
                 return;
             }
@@ -765,7 +766,6 @@
             const previousState = actionHistory[actionHistory.length - 1];
             restoreState(previousState);
             displayMessage('ย้อนกลับการกระทำล่าสุด', 'success');
-            console.log("Undo performed. History length:", actionHistory.length, "Redo length:", redoHistory.length);
         }
 
         function redo() {
@@ -777,29 +777,37 @@
             actionHistory.push(nextState);
             restoreState(nextState);
             displayMessage('ทำซ้ำการกระทำ', 'success');
-            console.log("Redo performed. History length:", actionHistory.length, "Redo length:", redoHistory.length);
         }
 
-        // --- Table Manipulation Logic ---
+        // --- [REVISED] Table Manipulation Logic ---
+
         function insertRow(direction) {
             updateSheetData();
             let data = XLSX.utils.sheet_to_json(currentWorkbook.Sheets[activeSheetName], {header: 1, defval: ''});
             let insertAt;
+            const activeCell = startCell || document.querySelector('#excel-table td.selected');
 
             if (selectedRows.size > 0) {
                 const baseIndex = direction === 'above' ? Math.min(...selectedRows) : Math.max(...selectedRows);
                 insertAt = direction === 'above' ? baseIndex : baseIndex + 1;
+            } else if (activeCell) {
+                const baseIndex = activeCell.parentElement.rowIndex;
+                insertAt = direction === 'above' ? baseIndex : baseIndex + 1;
             } else {
-                // If no row is selected, insert at the end (or after header if data is empty)
-                insertAt = data.length > 0 ? data.length : 1; // Insert after header if data exists, else at row 1
+                if (direction === 'above') {
+                    insertAt = 1; // After header row
+                } else { // 'below'
+                    insertAt = data.length; // At the very end
+                }
             }
             
-            const newRow = Array(data[0]?.length || 1).fill('');
+            const numCols = (data[0] || []).length || 1;
+            const newRow = Array(numCols).fill('');
             data.splice(insertAt, 0, newRow);
             
             currentWorkbook.Sheets[activeSheetName] = XLSX.utils.aoa_to_sheet(data);
             renderSheet(activeSheetName);
-            saveState();
+            saveState(false);
             displayMessage(direction === 'above' ? 'แทรกแถวด้านบนแล้ว' : 'แทรกแถวด้านล่างแล้ว', 'success');
         }
 
@@ -807,20 +815,27 @@
             updateSheetData();
             let data = XLSX.utils.sheet_to_json(currentWorkbook.Sheets[activeSheetName], {header: 1, defval: ''});
             let insertAt;
+            const activeCell = startCell || document.querySelector('#excel-table td.selected');
 
             if (selectedCols.size > 0) {
                 const baseIndex = direction === 'left' ? Math.min(...selectedCols) : Math.max(...selectedCols);
                 insertAt = direction === 'left' ? baseIndex - 1 : baseIndex;
+            } else if (activeCell) {
+                const baseIndex = activeCell.cellIndex;
+                insertAt = direction === 'left' ? baseIndex - 1 : baseIndex;
             } else {
-                // If no column is selected, insert at the end (or after first column if data is empty)
-                insertAt = (data[0] || []).length;
+                if (direction === 'left') {
+                    insertAt = 0; // At the very beginning
+                } else { // 'right'
+                    insertAt = (data[0] || []).length; // At the very end
+                }
             }
             
             data.forEach(row => row.splice(insertAt, 0, ''));
             
             currentWorkbook.Sheets[activeSheetName] = XLSX.utils.aoa_to_sheet(data);
             renderSheet(activeSheetName);
-            saveState();
+            saveState(false);
             displayMessage(direction === 'left' ? 'แทรกคอลัมน์ซ้ายแล้ว' : 'แทรกคอลัมน์ขวาแล้ว', 'success');
         }
 
@@ -832,21 +847,17 @@
             updateSheetData();
             let data = XLSX.utils.sheet_to_json(currentWorkbook.Sheets[activeSheetName], {header: 1, defval: ''});
             
-            // FIX: The rowIndex from the table (stored in selectedRows) corresponds directly 
-            // to the index in the data array when using {header: 1}.
-            // e.g., The first data row in the table is at rowIndex 1, and in the data array it's at index 1.
-            // The previous .map(r => r - 1) was incorrect and caused deletion of the wrong row (often the header).
             const sortedRows = [...selectedRows].sort((a, b) => b - a);
             
             sortedRows.forEach(rowIndex => {
-                if (rowIndex < data.length && rowIndex > 0) { // rowIndex > 0 is a safeguard against deleting the header
+                if (rowIndex < data.length && rowIndex > 0) {
                     data.splice(rowIndex, 1);
                 }
             });
             
             currentWorkbook.Sheets[activeSheetName] = XLSX.utils.aoa_to_sheet(data);
             renderSheet(activeSheetName);
-            saveState();
+            saveState(false);
             displayMessage('ลบแถวที่เลือกแล้ว', 'success');
         }
 
@@ -870,7 +881,7 @@
             
             currentWorkbook.Sheets[activeSheetName] = XLSX.utils.aoa_to_sheet(data);
             renderSheet(activeSheetName);
-            saveState();
+            saveState(false);
             displayMessage('ลบคอลัมน์ที่เลือกแล้ว', 'success');
         }
         
@@ -881,7 +892,7 @@
                 return;
             }
             selectedCells.forEach(cell => cell.innerText = '');
-            saveState(); // Save state after clearing content
+            saveState();
             displayMessage('ลบเนื้อหาแล้ว', 'success');
         }
 
@@ -932,31 +943,39 @@
 
         // --- Freeze Panes Logic ---
         function freezePanes() {
-            let freezeRow = 0;
-            let freezeCol = 0;
+            let freezeTargetRow = 0;
+            let freezeTargetCol = 0;
+
+            const activeCell = startCell || document.querySelector('#excel-table td.selected');
 
             if (selectedRows.size > 0) {
-                freezeRow = Math.max(...selectedRows);
+                freezeTargetRow = Math.max(...selectedRows);
             }
             if (selectedCols.size > 0) {
-                freezeCol = Math.max(...selectedCols);
+                freezeTargetCol = Math.max(...selectedCols);
             }
-            
+
             if (selectedRows.size === 0 && selectedCols.size === 0) {
-                if(startCell) {
-                    freezeRow = startCell.parentElement.rowIndex;
-                    freezeCol = startCell.cellIndex;
+                if (activeCell) {
+                    freezeTargetRow = activeCell.parentElement.rowIndex;
+                    freezeTargetCol = activeCell.cellIndex;
                 } else {
-                    freezeRow = 1;
-                    freezeCol = 1;
+                    freezeTargetRow = 1;
+                    freezeTargetCol = 1;
                 }
             }
-            
-            frozenState.row = freezeRow;
-            frozenState.col = freezeCol;
+
+            frozenState.row = freezeTargetRow + 1;
+            frozenState.col = freezeTargetCol + 1;
+
+            if (frozenState.row <= 1 && frozenState.col <= 1) {
+                unfreezePanes();
+                return;
+            }
+
             applyFreezing();
             saveState();
-            displayMessage('ตรึงแนวเรียบร้อยแล้ว', 'success');
+            displayMessage('ตรึงแนวที่เลือกแล้ว', 'success');
         }
 
         function unfreezePanes(showToast = true) {
@@ -989,44 +1008,46 @@
 
             if (!areRowsFrozen && !areColsFrozen) return;
 
-            const rowHeights = Array.from(rows).map(r => r.offsetHeight);
-            const colWidths = Array.from(rows[0].cells).map(c => c.offsetWidth);
-            
-            let cumulativeRowOffsets = [0];
-            for(let i = 1; i < rowHeights.length; i++) {
-                cumulativeRowOffsets[i] = cumulativeRowOffsets[i-1] + rowHeights[i-1];
-            }
+            setTimeout(() => {
+                const rowHeights = Array.from(rows).map(r => r.offsetHeight);
+                const colWidths = Array.from(rows[0].cells).map(c => c.offsetWidth);
+                
+                let cumulativeRowOffsets = [0];
+                for(let i = 1; i < rowHeights.length; i++) {
+                    cumulativeRowOffsets[i] = cumulativeRowOffsets[i-1] + rowHeights[i-1];
+                }
 
-            let cumulativeColOffsets = [0];
-            for(let i = 1; i < colWidths.length; i++) {
-                cumulativeColOffsets[i] = cumulativeColOffsets[i-1] + colWidths[i-1];
-            }
+                let cumulativeColOffsets = [0];
+                for(let i = 1; i < colWidths.length; i++) {
+                    cumulativeColOffsets[i] = cumulativeColOffsets[i-1] + colWidths[i-1];
+                }
 
-            for (let i = 0; i < rows.length; i++) {
-                const row = rows[i];
-                const isCellInFrozenRowArea = i < frozenState.row;
+                for (let i = 0; i < rows.length; i++) {
+                    const row = rows[i];
+                    const isCellInFrozenRowArea = i < frozenState.row;
 
-                for (let j = 0; j < row.cells.length; j++) {
-                    const cell = row.cells[j];
-                    const isCellInFrozenColArea = j < frozenState.col;
+                    for (let j = 0; j < row.cells.length; j++) {
+                        const cell = row.cells[j];
+                        const isCellInFrozenColArea = j < frozenState.col;
 
-                    if (areRowsFrozen && areColsFrozen && isCellInFrozenRowArea && isCellInFrozenColArea) {
-                        cell.classList.add('frozen-corner');
-                        cell.style.top = `${cumulativeRowOffsets[i]}px`;
-                        cell.style.left = `${cumulativeColOffsets[j]}px`;
-                    } else if (areRowsFrozen && isCellInFrozenRowArea) {
-                        cell.classList.add('frozen-row');
-                        cell.style.top = `${cumulativeRowOffsets[i]}px`;
-                    } else if (areColsFrozen && isCellInFrozenColArea) {
-                        cell.classList.add('frozen-col');
-                        cell.style.left = `${cumulativeColOffsets[j]}px`;
+                        if (areRowsFrozen && areColsFrozen && isCellInFrozenRowArea && isCellInFrozenColArea) {
+                            cell.classList.add('frozen-corner');
+                            cell.style.top = `${cumulativeRowOffsets[i]}px`;
+                            cell.style.left = `${cumulativeColOffsets[j]}px`;
+                        } else if (areRowsFrozen && isCellInFrozenRowArea) {
+                            cell.classList.add('frozen-row');
+                            cell.style.top = `${cumulativeRowOffsets[i]}px`;
+                        } else if (areColsFrozen && isCellInFrozenColArea) {
+                            cell.classList.add('frozen-col');
+                            cell.style.left = `${cumulativeColOffsets[j]}px`;
+                        }
                     }
                 }
-            }
+            }, 0);
         }
 
 
-        // --- SELECTION, NAVIGATION, AND EDITING LOGIC (REVISED) ---
+        // --- SELECTION, NAVIGATION, AND EDITING LOGIC ---
 
         function clearAllSelections() {
             document.querySelectorAll('.selected, .selected-header').forEach(el => el.classList.remove('selected', 'selected-header'));
@@ -1245,7 +1266,6 @@
             if (target.tagName === 'TD' || (target.tagName === 'TH' && target.closest('thead'))) {
                 if (target.hasAttribute('contenteditable')) {
                     target.removeAttribute('contenteditable');
-                    // Save state when cell editing finishes
                     saveState(); 
                 }
             }
@@ -1262,7 +1282,7 @@
                 e.preventDefault();
                 if (startCell) {
                     startCell.innerText = formulaBar.value;
-                    saveState(); // Save state after formula bar input
+                    saveState();
                     
                     const table = document.getElementById('excel-table');
                     const activeCell = startCell;
@@ -1292,7 +1312,7 @@
             if (activeEl.isContentEditable) {
                 if (e.key === 'Enter' && !e.shiftKey) {
                      e.preventDefault();
-                     activeEl.blur(); // This will trigger focusout and saveState
+                     activeEl.blur();
                      handleTableNavigation(e);
                 }
                 return;
@@ -1411,7 +1431,7 @@
                  console.warn('Could not read from system clipboard, using internal copy buffer.', err);
             }
 
-            if (!dataToPaste || dataToPaste.length === 0) {
+            if (!dataToPaste && copiedData) {
                 dataToPaste = copiedData;
             }
             
@@ -1420,21 +1440,45 @@
                 return;
             }
             
-            const startRow = parseInt(startCell.dataset.r, 10);
-            const startCol = parseInt(startCell.dataset.c, 10);
+            updateSheetData();
+            let data = XLSX.utils.sheet_to_json(currentWorkbook.Sheets[activeSheetName], {header: 1, defval: ''});
 
+            const startDataRow = parseInt(startCell.dataset.r, 10);
+            const startDataCol = parseInt(startCell.dataset.c, 10);
+
+            let maxCol = (data[0] || []).length;
+            data.forEach(r => maxCol = Math.max(maxCol, r.length));
+            
+            const pasteRows = dataToPaste.length;
+            const pasteCols = dataToPaste[0].length;
+
+            const requiredRows = startDataRow + pasteRows + 1;
+            while (data.length < requiredRows) {
+                data.push(new Array(maxCol).fill(''));
+            }
+            
             dataToPaste.forEach((row, rOffset) => {
+                const targetRowIndex = startDataRow + rOffset + 1;
                 row.forEach((value, cOffset) => {
-                    const targetRow = startRow + rOffset;
-                    const targetCol = startCol + cOffset;
-                    const targetCell = document.querySelector(`td[data-r="${targetRow}"][data-c="${targetCol}"]`);
-                    if (targetCell) {
-                        targetCell.innerText = value;
-                    }
+                    const targetColIndex = startDataCol + cOffset;
+                    data[targetRowIndex][targetColIndex] = value;
                 });
             });
+
+            currentWorkbook.Sheets[activeSheetName] = XLSX.utils.aoa_to_sheet(data);
+            renderSheet(activeSheetName);
+
+            const firstPastedCell = document.querySelector(`td[data-r="${startDataRow}"][data-c="${startDataCol}"]`);
+            const lastPastedCell = document.querySelector(`td[data-r="${startDataRow + pasteRows - 1}"][data-c="${startDataCol + pasteCols - 1}"]`);
             
-            saveState(); 
+            if (firstPastedCell) {
+                selectCell(firstPastedCell);
+                if(lastPastedCell) {
+                    updateCellSelection(lastPastedCell);
+                }
+            }
+            
+            saveState(false);
             displayMessage('วางข้อมูลเรียบร้อยแล้ว', 'success');
         }
 
@@ -1463,9 +1507,13 @@
             }
             sheetMerges[activeSheetName].push(mergeInfo);
             
-            updateSheetData();
+            if (currentWorkbook.Sheets[activeSheetName]) {
+                currentWorkbook.Sheets[activeSheetName]['!merges'] = sheetMerges[activeSheetName];
+            }
+            
             renderSheet(activeSheetName);
-            saveState();
+            saveState(false);
+            displayMessage('ผสานเซลล์แล้ว', 'success');
         }
 
         function unmergeSelectedCells() {
@@ -1485,9 +1533,14 @@
 
             if (mergeIndex > -1) {
                 merges.splice(mergeIndex, 1);
-                updateSheetData();
+                
+                if (currentWorkbook.Sheets[activeSheetName]) {
+                    currentWorkbook.Sheets[activeSheetName]['!merges'] = merges;
+                }
+
                 renderSheet(activeSheetName);
-                saveState();
+                saveState(false);
+                displayMessage('ยกเลิกการผสานเซลล์แล้ว', 'success');
             } else {
                  Swal.fire('คำเตือน', 'ช่องที่เลือกไม่ได้ถูกผสานไว้', 'warning');
             }
@@ -1531,24 +1584,38 @@
         
         function createHistoryElement(entry) {
              const li = document.createElement('li');
+             li.dataset.date = entry.date;
              li.className = 'flex items-center justify-between bg-gray-50 p-3 rounded-lg border';
              const date = new Date(entry.date);
              const formattedDate = date.toLocaleString('th-TH', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
              li.innerHTML = `
-                <div class="flex items-center gap-3">
+                <div class="flex items-center gap-3 flex-grow min-w-0">
                     <svg class="w-8 h-8 text-green-500 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
-                    <div>
-                        <p class="font-medium text-gray-800" title="${entry.originalName}">${entry.originalName}</p>
+                    <div class="min-w-0">
+                        <p class="font-medium text-gray-800 truncate" title="${entry.originalName}">${entry.originalName}</p>
                         <p class="text-sm text-gray-500">${formattedDate}</p>
                     </div>
                 </div>
-                <div class="text-right">
-                     <p class="text-sm font-medium text-gray-600">${entry.convertedName}</p>
-                     <p class="text-xs text-gray-500">บันทึกในโฟลเดอร์ดาวน์โหลด</p>
-                </div>`;
+                <div class="text-right flex-shrink-0 ml-4">
+                     <p class="text-sm font-medium text-gray-600 truncate" title="${entry.convertedName}">${entry.convertedName}</p>
+                     <p class="text-xs text-gray-500">บันทึกในดาวน์โหลด</p>
+                </div>
+                <button class="delete-history-item-btn ml-2 p-2 rounded-full hover:bg-red-100 text-gray-500 hover:text-red-600 transition-colors flex-shrink-0">
+                    <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>`;
              historyList.appendChild(li);
+        }
+
+        function deleteHistoryItem(itemDate) {
+            let history = JSON.parse(localStorage.getItem('conversionHistory') || '[]');
+            history = history.filter(item => item.date !== itemDate);
+            localStorage.setItem('conversionHistory', JSON.stringify(history));
+            loadHistory();
+            displayMessage('ลบรายการแล้ว', 'success');
         }
 
         function clearHistory() {
@@ -1560,12 +1627,7 @@
         // Initial Load
         document.addEventListener('DOMContentLoaded', () => {
              loadHistory();
-             // Initialize actionHistory with a dummy state or the current empty state
-             // This ensures actionHistory.length is at least 1 for undo to work correctly
              actionHistory = []; 
-             // If you want to save the initial empty state of the editor when it loads,
-             // you might call saveState() here, but it's usually better to save
-             // the first state *after* a file is loaded.
         });
     </script>
 </body>
