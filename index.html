@@ -43,6 +43,7 @@
             max-height: 60vh;
             overflow: auto;
             user-select: none;
+            transition: background-color 0.2s ease, outline 0.2s ease;
         }
         #excel-table {
             border-collapse: collapse;
@@ -1545,6 +1546,44 @@
                  Swal.fire('คำเตือน', 'ช่องที่เลือกไม่ได้ถูกผสานไว้', 'warning');
             }
         }
+
+        // --- [เพิ่มใหม่] ฟังก์ชันลากและวางไฟล์เพื่อโหลดไฟล์ใหม่ขณะที่ตัวแก้ไขทำงานอยู่ ---
+        // This allows users to drag a new file directly onto the editor view,
+        // which will reset the current state and load the new file.
+        editorView.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            // Add a visual indicator to show that a drop is possible
+            tableContainer.style.outline = '4px dashed #3b82f6';
+            tableContainer.style.outlineOffset = '-8px';
+            tableContainer.style.backgroundColor = '#eff6ff';
+        });
+
+        editorView.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            // Remove the visual indicator
+            tableContainer.style.outline = 'none';
+            tableContainer.style.outlineOffset = '';
+            tableContainer.style.backgroundColor = '';
+        });
+
+        editorView.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            // Remove the visual indicator
+            tableContainer.style.outline = 'none';
+            tableContainer.style.outlineOffset = '';
+            tableContainer.style.backgroundColor = '';
+
+            const files = e.dataTransfer.files;
+            if (files && files.length > 0) {
+                // การทำงานนี้จะเหมือนกับการกดปุ่ม "ไฟล์ใหม่" แล้วเลือกไฟล์ที่ลากมาวาง
+                // การรีเซ็ตสถานะของตัวแก้ไขก่อนโหลดไฟล์ใหม่เป็นสิ่งสำคัญ
+                resetEditor();
+                handleFileEdit(files[0]);
+            }
+        });
 
         // --- Utility & History Functions ---
         function displayMessage(title, type) {
