@@ -818,15 +818,81 @@
             updateRowCount();
         }
 
-        // --- Data Export ---
+        // --- Data Export (MODIFIED) ---
         function exportData(format) {
             if (!activeSheetName) return Swal.fire('ข้อผิดพลาด', "ไม่มีชีตที่กำลังทำงานอยู่เพื่อส่งออก", 'error');
             displayMessage('กำลังสร้างไฟล์...', 'loading');
+
             try {
+                // First, ensure the main workbook object is up-to-date with any changes in the DOM.
+                // This is crucial for other sheets and for the case where there are no filters.
                 updateSheetData();
+
                 const fileName = `${currentFilename}_edited.${format}`;
-                XLSX.writeFile(currentWorkbook, fileName, { bookType: format, cellDates: true });
+                let workbookToExport = currentWorkbook;
+
+                // If there are active filters on the current sheet, create a new workbook
+                // with a filtered version of the active sheet.
+                if (Object.keys(activeFilters).length > 0) {
+                    console.log("ส่งออกโดยใช้ตัวกรอง / Exporting with active filters.");
+                    const $table = $('#excel-table');
+                    const $visibleRows = $table.find('tbody tr:visible');
+
+                    // 1. Get headers and visible data
+                    const exportDataAOA = [];
+                    const headerRow = $table.find('thead tr:first th').slice(1).map((i, th) => $(th).text()).get();
+                    exportDataAOA.push(headerRow);
+
+                    const oldToNewRowMap = {};
+                    let newRowIdx = 1; // 0 is the header row
+
+                    $visibleRows.each(function() {
+                        const $row = $(this);
+                        // The original data row index (0-based) is stored in the first td's data-r attribute
+                        const originalDataRowIndex = $row.find('td:first').data('r');
+                        if (originalDataRowIndex !== undefined) {
+                            // Map the original data row index to the new 0-based data row index for the export
+                            oldToNewRowMap[originalDataRowIndex] = newRowIdx - 1;
+                        }
+                        exportDataAOA.push($row.find('td').map((i, td) => $(td).text()).get());
+                        newRowIdx++;
+                    });
+
+                    // 2. Remap merges for the visible rows
+                    const newMerges = [];
+                    (sheetMerges[activeSheetName] || []).forEach(merge => {
+                        // Check if the starting row of the merge is visible
+                        if (oldToNewRowMap.hasOwnProperty(merge.s.r)) {
+                            const newStartRow = oldToNewRowMap[merge.s.r];
+                            // Check if the ending row is also visible to include the merge
+                            const newEndRow = oldToNewRowMap[merge.e.r];
+                            
+                            if (newEndRow !== undefined) {
+                                 newMerges.push({
+                                    s: { r: newStartRow, c: merge.s.c },
+                                    e: { r: newEndRow, c: merge.e.c }
+                                });
+                            }
+                        }
+                    });
+                    
+                    // 3. Create a new sheet with filtered data and remapped merges
+                    const newSheet = XLSX.utils.aoa_to_sheet(exportDataAOA, { cellDates: true });
+                    newSheet['!merges'] = newMerges;
+                    
+                    // 4. Create a new workbook and copy over all sheets, replacing the active one
+                    const newWorkbook = XLSX.utils.book_new();
+                    currentWorkbook.SheetNames.forEach(name => {
+                        const sheetToAppend = (name === activeSheetName) ? newSheet : currentWorkbook.Sheets[name];
+                        XLSX.utils.book_append_sheet(newWorkbook, sheetToAppend, name);
+                    });
+                    workbookToExport = newWorkbook;
+                }
+
+                // 5. Write the final workbook (either original or the new filtered one)
+                XLSX.writeFile(workbookToExport, fileName, { bookType: format, cellDates: true });
                 displayMessage(`สร้างไฟล์ ${fileName} สำเร็จ!`, 'success');
+
             } catch (error) {
                 displayMessage('เกิดข้อผิดพลาดในการสร้างไฟล์', 'error');
                 console.error("Export error:", error);
