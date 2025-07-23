@@ -219,6 +219,12 @@
         }
         .filter-item:hover { background-color: #f3f4f6; }
         .filter-item input { margin-right: 0.5rem; }
+        .copyright {
+            text-align: center;
+            margin-top: 50px;
+            font-size: 0.9rem;
+            color: #888;
+        }
     </style>
 </head>
 <body class="p-2 sm:p-4">
@@ -344,6 +350,9 @@
                 </div>
             </div>
         </div>
+        <div class="copyright">
+                &copy; <span id="currentYear"></span> <a href="https://github.com/chaiwat20180" class="text-decoration-none text-blue-600">Chaiwat Kwanta</a> All rights reserved.
+        </div>
     </div>
 
     <script>
@@ -367,6 +376,8 @@
         let frozenState = { row: 0, col: 0 };
         let activeFilters = {};
 
+        $('#currentYear').text(`2024 - ${new Date().getFullYear()}`);
+        
         // --- Main Initialization ---
         $(document).ready(function() {
             initTabs();
